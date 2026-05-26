@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title data-i18n="title">Payment Plan Calculator</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<header>
+  <div class="lang-switch">
+    <button type="button" class="lang-btn active" data-lang="en">English</button>
+    <button type="button" class="lang-btn" data-lang="ar">العربية</button>
+  </div>
+  <h1 data-i18n="title">Payment Plan Calculator</h1>
+  <p class="subtitle" data-i18n="subtitle">Build an installment plan with down payment, custom payments, and a target interest (discount) rate.</p>
+</header>
+
+<main>
+  <section class="card inputs">
+    <h2 data-i18n="planParams">Plan Parameters</h2>
+
+    <div class="grid">
+      <label>
+        <span class="label-row">
+          <span data-i18n="cashValue">Cash Value</span>
+          <button type="button" class="help" data-i18n-tip="cashValueTip" aria-label="Help">?</button>
+        </span>
+        <input type="number" id="cashValue" value="1000000" min="0" step="1000" />
+      </label>
+
+      <label>
+        <span class="label-row">
+          <span data-i18n="interestRate">Interest Rate (annual %)</span>
+          <button type="button" class="help" data-i18n-tip="interestRateTip" aria-label="Help">?</button>
+        </span>
+        <input type="number" id="interestRate" value="22" min="0" step="0.01" />
+      </label>
+
+      <label>
+        <span class="label-row">
+          <span data-i18n="downPayment">Down Payment (%)</span>
+          <button type="button" class="help" data-i18n-tip="downPaymentTip" aria-label="Help">?</button>
+        </span>
+        <input type="number" id="downPayment" value="10" min="0" max="100" step="0.01" />
+      </label>
+
+      <label>
+        <span class="label-row">
+          <span data-i18n="paymentInterval">Payment Interval</span>
+          <button type="button" class="help" data-i18n-tip="paymentIntervalTip" aria-label="Help">?</button>
+        </span>
+        <select id="paymentInterval">
+          <option value="12" data-i18n="monthly">Monthly</option>
+          <option value="4" selected data-i18n="quarterly">Quarterly</option>
+          <option value="2" data-i18n="semiAnnually">Semi-Annually</option>
+          <option value="1" data-i18n="annually">Annually</option>
+        </select>
+      </label>
+
+      <label>
+        <span class="label-row">
+          <span data-i18n="years">Years</span>
+          <button type="button" class="help" data-i18n-tip="yearsTip" aria-label="Help">?</button>
+        </span>
+        <input type="number" id="years" value="5" min="0" step="1" />
+      </label>
+
+      <label>
+        <span class="label-row">
+          <span data-i18n="startDate">Start Date</span>
+          <button type="button" class="help" data-i18n-tip="startDateTip" aria-label="Help">?</button>
+        </span>
+        <input type="date" id="startDate" />
+      </label>
+
+      <label>
+        <span class="label-row">
+          <span data-i18n="roundUpTo">Round Up To</span>
+          <button type="button" class="help" data-i18n-tip="roundUpToTip" aria-label="Help">?</button>
+        </span>
+        <select id="cielDigits">
+          <option value="0" data-i18n="noRounding">No rounding</option>
+          <option value="1" data-i18n="nearest10">Nearest 10</option>
+          <option value="2" data-i18n="nearest100">Nearest 100</option>
+          <option value="3" selected data-i18n="nearest1k">Nearest 1,000</option>
+          <option value="4" data-i18n="nearest10k">Nearest 10,000</option>
+          <option value="5" data-i18n="nearest100k">Nearest 100,000</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="bulk-section">
+      <div class="bulk-header">
+        <h3>
+          <span data-i18n="bulkPayments">Custom Payments</span>
+          <button type="button" class="help" data-i18n-tip="customPaymentsTip" aria-label="Help">?</button>
+        </h3>
+        <button type="button" id="addBulk" class="btn btn-secondary" data-i18n="addBulk">+ Add Custom Payment</button>
+      </div>
+      <div id="bulkList" class="bulk-list"></div>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="calculate" class="btn btn-primary" data-i18n="calculate">Calculate</button>
+      <button type="button" id="reset" class="btn btn-ghost" data-i18n="reset">Reset</button>
+    </div>
+
+    <div id="errorBox" class="error" hidden></div>
+  </section>
+
+  <section class="card results" id="resultsCard" hidden>
+    <div class="results-header">
+      <h2 data-i18n="results">Results</h2>
+      <div class="export-buttons">
+        <button type="button" id="exportPdf" class="btn btn-secondary" data-i18n="exportPdf">Print / Save as PDF</button>
+        <button type="button" id="exportXlsx" class="btn btn-secondary" data-i18n="exportExcel">Export Excel</button>
+      </div>
+    </div>
+
+    <div class="summary-grid">
+      <div class="summary-item"><span class="label" data-i18n="downPaymentShort">Down Payment</span><span class="value" id="rDown">—</span></div>
+      <div class="summary-item"><span class="label" data-i18n="installmentAmount">Installment Amount</span><span class="value" id="rInstallment">—</span></div>
+      <div class="summary-item"><span class="label" data-i18n="numInstallments"># of Installments</span><span class="value" id="rNumInstall">—</span></div>
+      <div class="summary-item"><span class="label" data-i18n="factor">Factor (Total / Cash)</span><span class="value" id="rFactor">—</span></div>
+      <div class="summary-item"><span class="label" data-i18n="totalPaid">Total Paid</span><span class="value" id="rTotal">—</span></div>
+      <div class="summary-item"><span class="label" data-i18n="totalCeiled">Total (Ceiled)</span><span class="value" id="rTotalCieled">—</span></div>
+    </div>
+
+    <h3 data-i18n="schedule">Payment Schedule</h3>
+    <div class="schedule-wrapper">
+      <table id="scheduleTable">
+        <thead>
+          <tr>
+            <th data-i18n="hash">#</th>
+            <th data-i18n="date">Date</th>
+            <th data-i18n="type">Type</th>
+            <th class="num" data-i18n="amount">Amount</th>
+            <th class="num" data-i18n="ceiled">Ceiled</th>
+            <th class="num" data-i18n="cumulative">Cumulative</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <details class="card algorithm" id="algorithmCard">
+    <summary>
+      <span class="icon" aria-hidden="true">∑</span>
+      <span data-i18n="howItWorks">How it works (technical details)</span>
+    </summary>
+    <div class="content">
+      <p data-i18n="algoIntro">The calculator uses Net Present Value (NPV) logic: the present value of all future payments, discounted at the chosen rate, equals the entered Cash Value.</p>
+
+      <h4 data-i18n="algoStep1Title">Step 1 — Build a percentage cashflow</h4>
+      <p data-i18n="algoStep1">We construct a template cashflow in percentages. Position 0 is the down payment. Positions 1..N are equal installments. Custom payments are added on top of their respective positions.</p>
+<pre>cashflow[0]     = down_payment_pct × 100
+cashflow[1..N]  = installment_pct × 100      where installment_pct = (1 − down − Σ custom) / N
+cashflow[idx]  += custom_pct × 100           for each custom payment at index idx</pre>
+
+      <h4 data-i18n="algoStep2Title">Step 2 — Compute factor via NPV</h4>
+      <p data-i18n="algoStep2">We compute the Net Present Value of that cashflow, then divide the sum of cashflow by the NPV to get the factor (the value multiplier).</p>
+<pre>rate_per_period = annual_rate / payments_per_year
+NPV(rate, cf)   = Σ  cf[t] / (1 + rate)^t       for t = 0..length(cf)-1
+factor          = Σ cf  /  NPV(rate_per_period, cf)</pre>
+
+      <h4 data-i18n="algoStep3Title">Step 3 — Convert to amounts</h4>
+      <p data-i18n="algoStep3">Future Value (FV) = factor × Cash Value. Each individual payment is its percentage × FV.</p>
+<pre>FV          = factor × cash_value
+down        = down_payment_pct × FV
+installment = installment_pct  × FV
+custom_i    = custom_pct_i     × FV          (added to its installment row)
+total       = down + Σ installments + Σ customs</pre>
+
+      <h4 data-i18n="algoStep4Title">Step 4 — Round up (optional)</h4>
+      <p data-i18n="algoStep4">For customer-friendly amounts, each payment is rounded UP to the nearest 10ⁿ. This makes the displayed total slightly higher than the raw NPV-balanced total.</p>
+<pre>round_up(x, n) = ⌈ x / 10ⁿ ⌉ × 10ⁿ</pre>
+
+      <h4><span data-i18n="exampleLabel">Example</span></h4>
+      <div class="example">
+        <p data-i18n="algoExample1"></p>
+        <p data-i18n="algoExample2"></p>
+        <p data-i18n="algoExample3"></p>
+      </div>
+
+      <h4 data-i18n="algoNoteTitle">Why this works</h4>
+      <p data-i18n="algoNote">NPV guarantees that, at the chosen interest rate, the discounted sum of every scheduled payment equals today's Cash Value. This is the same math used in mortgage and lease contracts.</p>
+    </div>
+  </details>
+</main>
+
+<!-- Tooltip popover (positioned via JS) -->
+<div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+
+<footer>
+  <p data-i18n="footer">Static calculator — runs entirely in your browser.</p>
+  <p class="print-only" id="printMeta"></p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="i18n.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
