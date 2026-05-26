@@ -183,6 +183,296 @@
     return { label: 'Core function unit tests', assertions: a };
   }
 
+  // -------------------- xnpv unit tests --------------------
+
+  function runXnpvTests() {
+    const a = [];
+    const d = (s) => parseStartDate(s);
+
+    a.push(eq('xnpv: empty list → 0', xnpv(0.10, []), 0));
+    a.push(eq('xnpv: single item at baseDate → amount',
+      xnpv(0.10, [{ amount: 500, date: d('2026-01-01') }], d('2026-01-01')), 500, 1e-9));
+    a.push(eq('xnpv: rate=0 returns sum',
+      xnpv(0, [
+        { amount: 100, date: d('2026-01-01') },
+        { amount: 200, date: d('2027-01-01') },
+        { amount: 300, date: d('2028-01-01') },
+      ], d('2026-01-01')), 600, 1e-9));
+    // 110 exactly one year (365 days) after baseDate at 10% → 100
+    a.push(eq('xnpv: 110 one year out at 10% → 100',
+      xnpv(0.10, [{ amount: 110, date: d('2027-01-01') }], d('2026-01-01')),
+      110 / Math.pow(1.10, 365 / 365), 1e-9));
+    // Default baseDate = items[0].date
+    a.push(eq('xnpv: default baseDate uses items[0].date',
+      xnpv(0.10, [
+        { amount: 100, date: d('2026-01-01') },
+        { amount: 110, date: d('2027-01-01') },
+      ]),
+      100 + 110 / Math.pow(1.10, 365 / 365), 1e-9));
+    // Two flows: 100 at t=0, 100 exactly 1 year later at 10% → 100 + 100/1.10
+    a.push(eq('xnpv: 100@t0 + 100@+365d, r=10% → 190.909...',
+      xnpv(0.10, [
+        { amount: 100, date: d('2026-01-01') },
+        { amount: 100, date: d('2027-01-01') },
+      ], d('2026-01-01')),
+      100 + 100 / 1.10, 1e-9));
+
+    return { label: 'xnpv unit tests', assertions: a };
+  }
+
+  // -------------------- Reverse plan integration tests --------------------
+
+  function makeReverseInputs(paymentInterval, totalPaid) {
+    return {
+      totalPaid,
+      interestRate: 0.10,
+      downPaymentPct: 0.10,
+      paymentInterval,
+      years: 5,
+      bulks: [{ pct: 0.10, idx: paymentInterval }],
+      startDate: parseStartDate('2026-01-01'),
+    };
+  }
+
+  function runReverseIntervalTest(paymentInterval, label) {
+    const fwdExpected = EXPECTED[paymentInterval];
+    // Use the forward "total" (analytical pre-floor) as input to reverse mode.
+    const totalPaid = fwdExpected.total;
+    const inputs = makeReverseInputs(paymentInterval, totalPaid);
+    const plan = computeReversePlan(inputs);
+    const N = paymentInterval * 5;
+
+    const expectedDown = inputs.downPaymentPct * totalPaid;
+    const expectedCustom = inputs.bulks[0].pct * totalPaid;
+    const expectedInstallment = (totalPaid - expectedDown - expectedCustom) / N;
+
+    const sumAmounts = plan.fvDown + plan.fvBulks.reduce((s, b) => s + b.amount, 0)
+                     + plan.fvInstallments.reduce((s, v) => s + v, 0);
+
+    const assertions = [
+      eq(`${label} reverse: numInstallments`, plan.numInstallments, N),
+      eq(`${label} reverse: down ≈ downPct × totalPaid`,
+        plan.fvDown, Math.floor(expectedDown), 1),
+      eq(`${label} reverse: each installment ≈ analytical value`,
+        plan.fvInstallments.every(v => Math.abs(v - expectedInstallment) < 1e-6), true),
+      eq(`${label} reverse: 1 custom payment at idx=${paymentInterval}`,
+        plan.fvBulks.length === 1 && plan.fvBulks[0].idx === paymentInterval, true),
+      eq(`${label} reverse: custom amount ≈ customPct × totalPaid`,
+        plan.fvBulks[0].amount, Math.floor(expectedCustom), 1),
+      // floor() on down + on each bulk amount can each drop up to 1, so
+      // the round-trip sum can be up to (1 + #bulks) below the input total.
+      eq(`${label} reverse: round-trip total within floor noise`,
+        Math.abs(sumAmounts - totalPaid) <= 2, true),
+      eq(`${label} reverse: cashValue > 0 and < totalPaid`,
+        plan.cashValue > 0 && plan.cashValue < totalPaid, true),
+      eq(`${label} reverse: cashValue within 1% of 1,000,000 (forward source)`,
+        Math.abs(plan.cashValue - 1_000_000) / 1_000_000 < 0.01, true),
+      // plan.factor and plan.cashValue use raw (pre-round) values internally,
+      // so factor × cashValue reconstructs the raw total to floor-noise.
+      eq(`${label} reverse: factor × cashValue ≈ total`,
+        Math.abs(plan.factor * plan.cashValue - plan.total) <= 2, true),
+    ];
+
+    // Invariant: XNPV of the *raw* dated cashflow at the chosen rate
+    // reconstructs the computed cashValue. fvBulks are floored in the
+    // returned plan, so adding them back via xnpv leaves a small residual
+    // bounded by (#bulks + 1) units of present value.
+    const monthsStep = monthsBetween(paymentInterval);
+    const items = [{ amount: plan.fvDown, date: inputs.startDate }];
+    for (let i = 0; i < N; i++) {
+      const date = addMonths(inputs.startDate, (i + 1) * monthsStep);
+      let amt = plan.fvInstallments[i];
+      const bulk = plan.fvBulks.find(b => b.idx === i + 1);
+      if (bulk) amt += bulk.amount;
+      items.push({ amount: amt, date });
+    }
+    const xnpvVal = xnpv(inputs.interestRate, items, inputs.startDate);
+    assertions.push(eq(`${label} reverse: XNPV(cashflow) ≈ cashValue (floor noise)`,
+      Math.abs(xnpvVal - plan.cashValue) < 3, true));
+
+    return { label: `${label} (reverse)`, plan, assertions };
+  }
+
+  function runReverseEdgeCases() {
+    const a = [];
+
+    // No customs: down + N equal installments only.
+    const noBulkInputs = {
+      totalPaid: 1_247_641,
+      interestRate: 0.10,
+      downPaymentPct: 0.10,
+      paymentInterval: 4,
+      years: 5,
+      bulks: [],
+      startDate: parseStartDate('2026-01-01'),
+    };
+    const p1 = computeReversePlan(noBulkInputs);
+    a.push(eq('reverse edge: no customs → fvBulks empty', p1.fvBulks.length, 0));
+    a.push(eq('reverse edge: no customs → down = 10% × total',
+      p1.fvDown, Math.floor(0.10 * 1_247_641)));
+    a.push(eq('reverse edge: no customs → installment = 0.90 × total / 20',
+      Math.abs(p1.fvInstallments[0] - (0.90 * 1_247_641) / 20) < 1e-6, true));
+
+    // Zero down payment.
+    const zeroDownInputs = {
+      totalPaid: 1_000_000,
+      interestRate: 0.10,
+      downPaymentPct: 0,
+      paymentInterval: 4,
+      years: 5,
+      bulks: [],
+      startDate: parseStartDate('2026-01-01'),
+    };
+    const p2 = computeReversePlan(zeroDownInputs);
+    a.push(eq('reverse edge: zero down → fvDown = 0', p2.fvDown, 0));
+    a.push(eq('reverse edge: zero down → 20 equal installments of 50,000',
+      p2.fvInstallments.every(v => Math.abs(v - 50_000) < 1e-6), true));
+
+    // Rate = 0 → cashValue should equal totalPaid (no discounting).
+    const zeroRateInputs = {
+      totalPaid: 1_000_000,
+      interestRate: 0,
+      downPaymentPct: 0.10,
+      paymentInterval: 4,
+      years: 5,
+      bulks: [],
+      startDate: parseStartDate('2026-01-01'),
+    };
+    const p3 = computeReversePlan(zeroRateInputs);
+    a.push(eq('reverse edge: rate=0 → cashValue equals totalPaid', p3.cashValue, 1_000_000));
+    a.push(eq('reverse edge: rate=0 → factor = 1',
+      Math.abs(p3.factor - 1) < 1e-9, true));
+
+    // Throws: down + customs ≥ 100%.
+    let threw = false;
+    try {
+      computeReversePlan({
+        totalPaid: 1_000_000, interestRate: 0.10, downPaymentPct: 0.60,
+        paymentInterval: 4, years: 5,
+        bulks: [{ pct: 0.50, idx: 1 }],
+        startDate: parseStartDate('2026-01-01'),
+      });
+    } catch (e) { threw = true; }
+    a.push(eq('reverse edge: throws when down + customs > 100%', threw, true));
+
+    // Throws: bulk idx out of range.
+    threw = false;
+    try {
+      computeReversePlan({
+        totalPaid: 1_000_000, interestRate: 0.10, downPaymentPct: 0.10,
+        paymentInterval: 4, years: 5,
+        bulks: [{ pct: 0.10, idx: 99 }],
+        startDate: parseStartDate('2026-01-01'),
+      });
+    } catch (e) { threw = true; }
+    a.push(eq('reverse edge: throws when bulk idx > numInstallments', threw, true));
+
+    // Throws: zero installments.
+    threw = false;
+    try {
+      computeReversePlan({
+        totalPaid: 1_000_000, interestRate: 0.10, downPaymentPct: 0.10,
+        paymentInterval: 4, years: 0,
+        bulks: [],
+        startDate: parseStartDate('2026-01-01'),
+      });
+    } catch (e) { threw = true; }
+    a.push(eq('reverse edge: throws when numInstallments = 0', threw, true));
+
+    // Forward → reverse → forward round trip (with no rounding) should agree
+    // on amounts to within floor() noise, since both share the same
+    // percentage decomposition. Cash values diverge by the documented
+    // period-NPV vs XNPV basis gap, so we only check amounts here.
+    const fwd = computePlan({
+      cashValue: 1_000_000, interestRate: 0.10, downPaymentPct: 0.10,
+      paymentInterval: 4, years: 5, bulks: [{ pct: 0.10, idx: 4 }],
+    });
+    const rev = computeReversePlan({
+      totalPaid: fwd.total,
+      interestRate: 0.10, downPaymentPct: 0.10,
+      paymentInterval: 4, years: 5, bulks: [{ pct: 0.10, idx: 4 }],
+      startDate: parseStartDate('2026-01-01'),
+    });
+    a.push(eq('reverse round-trip: down matches forward', rev.fvDown, fwd.fvDown));
+    a.push(eq('reverse round-trip: installment matches forward',
+      Math.abs(rev.fvInstallments[0] - fwd.fvInstallments[0]) < 1, true));
+    a.push(eq('reverse round-trip: custom matches forward',
+      rev.fvBulks[0].amount, fwd.fvBulks[0].amount));
+    a.push(eq('reverse round-trip: total matches forward (within 1)',
+      Math.abs(rev.total - fwd.total) <= 1, true));
+
+    return { label: 'Reverse mode edge cases', assertions: a };
+  }
+
+  // -------------------- Reverse sensitivity table tests --------------------
+
+  function runReverseSensitivityTests() {
+    const a = [];
+    const baseInputs = {
+      totalPaid: 1_228_257,
+      interestRate: 0.10,
+      downPaymentPct: 0.10,
+      paymentInterval: 4,
+      years: 5,
+      bulks: [{ pct: 0.10, idx: 4 }],
+      startDate: parseStartDate('2026-01-01'),
+    };
+
+    // Default ±10% in steps of 1% → 21 rows centered on 10%.
+    const rows = computeReverseSensitivity(baseInputs);
+    a.push(eq('sensitivity: default sweep returns 21 rows', rows.length, 21));
+    a.push(eq('sensitivity: first row at 0%',
+      Math.abs(rows[0].rate - 0) < 1e-9, true));
+    a.push(eq('sensitivity: last row at 20%',
+      Math.abs(rows.at(-1).rate - 0.20) < 1e-9, true));
+    a.push(eq('sensitivity: step is exactly 1%',
+      rows.every((r, i) => i === 0 || Math.abs((r.rate - rows[i-1].rate) - 0.01) < 1e-9),
+      true));
+    a.push(eq('sensitivity: exactly one center row at chosen rate',
+      rows.filter(r => r.isCenter).length, 1));
+    const centerRow = rows.find(r => r.isCenter);
+    a.push(eq('sensitivity: center row rate = input rate',
+      Math.abs(centerRow.rate - baseInputs.interestRate) < 1e-9, true));
+
+    // Center row's cashValue should match a standalone reverse plan at the
+    // input rate.
+    const standalone = computeReversePlan(baseInputs);
+    a.push(eq('sensitivity: center row cashValue matches computeReversePlan',
+      centerRow.cashValue, standalone.cashValue));
+
+    // Monotonicity: cashValue strictly decreases as rate increases (future
+    // payments discount more heavily).
+    let monotone = true;
+    for (let i = 1; i < rows.length; i++) {
+      if (rows[i].cashValue >= rows[i-1].cashValue) { monotone = false; break; }
+    }
+    a.push(eq('sensitivity: cashValue strictly decreases as rate increases',
+      monotone, true));
+
+    // All rows have valid cashValues (no errors) for this well-posed input.
+    a.push(eq('sensitivity: every row has a numeric cashValue',
+      rows.every(r => typeof r.cashValue === 'number'), true));
+
+    // At rate=0% the cash value equals total paid (no discounting).
+    const zeroRow = rows.find(r => Math.abs(r.rate) < 1e-9);
+    a.push(eq('sensitivity: rate=0% → cashValue = totalPaid',
+      zeroRow.cashValue, baseInputs.totalPaid));
+
+    // Custom sweep range/step.
+    const wider = computeReverseSensitivity(baseInputs, 0.05, 0.05, 0.01);
+    a.push(eq('sensitivity: ±5% step 1% → 11 rows', wider.length, 11));
+    const halfStep = computeReverseSensitivity(baseInputs, 0.02, 0.02, 0.005);
+    a.push(eq('sensitivity: ±2% step 0.5% → 9 rows', halfStep.length, 9));
+
+    // Skips invalid rates ≤ -100%. With center=10% and lowDelta=120%, the
+    // lower bound is -110%, which must be excluded.
+    const wideLow = computeReverseSensitivity(baseInputs, 1.20, 0, 0.01);
+    a.push(eq('sensitivity: rates ≤ -100% are skipped',
+      wideLow.every(r => r.rate > -1), true));
+
+    return { label: 'Reverse sensitivity table', assertions: a };
+  }
+
   // ----------------------------------------------------------------------
 
   function runTests() {
@@ -192,7 +482,14 @@
       { interval: 2, label: 'Semi-Annually (2/yr)' },
       { interval: 1, label: 'Annually (1/yr)' },
     ];
-    const results = [runUnitTests(), ...cases.map(c => runIntervalTest(c.interval, c.label))];
+    const results = [
+      runUnitTests(),
+      runXnpvTests(),
+      ...cases.map(c => runIntervalTest(c.interval, c.label)),
+      ...cases.map(c => runReverseIntervalTest(c.interval, c.label)),
+      runReverseEdgeCases(),
+      runReverseSensitivityTests(),
+    ];
     const total = results.reduce((s, r) => s + r.assertions.length, 0);
     const passed = results.reduce((s, r) => s + r.assertions.filter(a => a.pass).length, 0);
     console.group(`Payment Plan Tests — ${passed}/${total} passed`);

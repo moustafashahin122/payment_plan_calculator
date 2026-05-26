@@ -20,11 +20,16 @@
   <section class="card inputs">
     <h2 data-i18n="planParams">Plan Parameters</h2>
 
+    <div class="mode-switch">
+      <label class="mode-radio"><input type="radio" name="mode" value="forward" checked /> <span data-i18n="modeForward">Forward (cash → plan)</span></label>
+      <label class="mode-radio"><input type="radio" name="mode" value="reverse" /> <span data-i18n="modeReverse">Reverse (plan → cash)</span></label>
+    </div>
+
     <div class="grid">
       <label>
         <span class="label-row">
-          <span data-i18n="cashValue">Cash Value</span>
-          <button type="button" class="help" data-i18n-tip="cashValueTip" aria-label="Help">?</button>
+          <span data-i18n="cashValue" id="cashValueLabel">Cash Value</span>
+          <button type="button" class="help" data-i18n-tip="cashValueTip" id="cashValueHelp" aria-label="Help">?</button>
         </span>
         <input type="number" id="cashValue" value="1000000" min="0" step="1000" />
       </label>
@@ -119,12 +124,30 @@
     </div>
 
     <div class="summary-grid">
+      <div class="summary-item" id="rCashValueItem" hidden><span class="label" data-i18n="cashValueComputed">Cash Value (computed)</span><span class="value" id="rCashValue">—</span></div>
       <div class="summary-item"><span class="label" data-i18n="downPaymentShort">Down Payment</span><span class="value" id="rDown">—</span></div>
       <div class="summary-item"><span class="label" data-i18n="installmentAmount">Installment Amount</span><span class="value" id="rInstallment">—</span></div>
       <div class="summary-item"><span class="label" data-i18n="numInstallments"># of Installments</span><span class="value" id="rNumInstall">—</span></div>
       <div class="summary-item"><span class="label" data-i18n="factor">Factor (Total / Cash)</span><span class="value" id="rFactor">—</span></div>
       <div class="summary-item"><span class="label" data-i18n="totalPaid">Total Paid</span><span class="value" id="rTotal">—</span></div>
       <div class="summary-item"><span class="label" data-i18n="totalCeiled">Total (Ceiled)</span><span class="value" id="rTotalCieled">—</span></div>
+    </div>
+
+    <div id="sensitivitySection" hidden>
+      <h3 data-i18n="sensitivityTitle">Cash Value Sensitivity (±10% around chosen rate)</h3>
+      <p class="hint" data-i18n="sensitivityHint">If you're not sure of the exact discount rate, scan how the cash value changes for each whole-percent rate around your input.</p>
+      <div class="schedule-wrapper">
+        <table id="sensitivityTable">
+          <thead>
+            <tr>
+              <th data-i18n="rate">Rate</th>
+              <th class="num" data-i18n="cashValueComputed">Cash Value (computed)</th>
+              <th class="num" data-i18n="deltaVsTotal">Δ vs Total Paid</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
 
     <h3 data-i18n="schedule">Payment Schedule</h3>

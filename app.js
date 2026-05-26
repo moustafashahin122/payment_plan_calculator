@@ -17,6 +17,21 @@ function npv(rate, cashflows) {
   return total;
 }
 
+// xnpv(rate, items, baseDate): date-based NPV.
+// items: [{ amount, date }]. baseDate defaults to items[0].date.
+// Σ amount_i / (1 + rate)^((date_i - baseDate) / 365)
+function xnpv(rate, items, baseDate) {
+  if (!items.length) return 0;
+  const t0 = (baseDate || items[0].date).getTime();
+  const MS_PER_YEAR = 365 * 24 * 60 * 60 * 1000;
+  let total = 0;
+  for (const it of items) {
+    const years = (it.date.getTime() - t0) / MS_PER_YEAR;
+    total += it.amount / Math.pow(1 + rate, years);
+  }
+  return total;
+}
+
 function roundUpToNearest(value, digits) {
   const step = Math.pow(10, digits);
   return Math.ceil(value / step) * step;
@@ -89,6 +104,77 @@ function computePlan(inputs) {
   const total = fvDown + fvBulks.reduce((s, b) => s + b.amount, 0) + fvInstallments.reduce((s, v) => s + v, 0);
 
   return { factor, fv: Math.floor(fv), fvDown, fvInstallment, fvInstallments, fvBulks, total, numInstallments, paymentInterval };
+}
+
+// Reverse mode: given total paid + same percentages, compute amounts directly,
+// then run XNPV across the dated cashflow to recover the cash value.
+function computeReversePlan(inputs) {
+  const { totalPaid, interestRate, downPaymentPct, paymentInterval, years, bulks, startDate } = inputs;
+  const numInstallments = Math.round(years * paymentInterval);
+  if (numInstallments <= 0) throw new Error('Number of installments must be > 0.');
+
+  const bulkPct = bulks.reduce((s, b) => s + b.pct, 0);
+  const remainingPct = 1 - downPaymentPct - bulkPct;
+  if (remainingPct <= 0) throw new Error('Down payment + bulk payments exceed 100%.');
+
+  for (const b of bulks) {
+    if (b.idx < 1 || b.idx > numInstallments) {
+      throw new Error(`Bulk payment at # ${b.idx} exceeds plan duration (${numInstallments}).`);
+    }
+  }
+
+  const fvDown = downPaymentPct * totalPaid;
+  const fvBulks = bulks.map(b => ({ amount: b.pct * totalPaid, idx: b.idx }));
+  const installmentAmount = (totalPaid - fvDown - fvBulks.reduce((s, b) => s + b.amount, 0)) / numInstallments;
+  if (installmentAmount < 0) throw new Error('Installment amount is negative — check inputs.');
+  const fvInstallments = new Array(numInstallments).fill(installmentAmount);
+
+  // Build dated cashflow for XNPV.
+  const monthsStep = monthsBetween(paymentInterval);
+  const items = [{ amount: fvDown, date: startDate }];
+  for (let i = 0; i < numInstallments; i++) {
+    const date = addMonths(startDate, (i + 1) * monthsStep);
+    let amount = fvInstallments[i];
+    const bulk = fvBulks.find(b => b.idx === i + 1);
+    if (bulk) amount += bulk.amount;
+    items.push({ amount, date });
+  }
+
+  const cashValue = xnpv(interestRate, items, startDate);
+  const total = fvDown + fvBulks.reduce((s, b) => s + b.amount, 0) + fvInstallments.reduce((s, v) => s + v, 0);
+  const factor = cashValue > 0 ? total / cashValue : 0;
+
+  return {
+    factor, fv: Math.floor(cashValue * factor) || Math.round(total),
+    fvDown: Math.floor(fvDown),
+    fvInstallment: Math.floor(installmentAmount),
+    fvInstallments,
+    fvBulks: fvBulks.map(b => ({ amount: Math.floor(b.amount), idx: b.idx })),
+    total: Math.round(total),
+    numInstallments, paymentInterval,
+    cashValue: Math.round(cashValue),
+  };
+}
+
+// Sensitivity sweep for reverse mode. Returns rows {rate, cashValue} for
+// rates in [centerRate - lowDeltaPct, centerRate + highDeltaPct] stepping
+// by stepPct percentage points. Skips rates ≤ -100% (mathematically invalid).
+function computeReverseSensitivity(inputs, lowDeltaPct = 0.10, highDeltaPct = 0.10, stepPct = 0.01) {
+  const rows = [];
+  // Use integer ticks so step arithmetic is exact regardless of float drift.
+  const stepsLow = Math.round(lowDeltaPct / stepPct);
+  const stepsHigh = Math.round(highDeltaPct / stepPct);
+  for (let i = -stepsLow; i <= stepsHigh; i++) {
+    const rate = +(inputs.interestRate + i * stepPct).toFixed(10);
+    if (rate <= -1) continue;
+    try {
+      const p = computeReversePlan({ ...inputs, interestRate: rate });
+      rows.push({ rate, cashValue: p.cashValue, isCenter: i === 0 });
+    } catch (e) {
+      rows.push({ rate, cashValue: null, error: e.message, isCenter: i === 0 });
+    }
+  }
+  return rows;
 }
 
 function applyCeiling(plan, digits) {
@@ -173,46 +259,109 @@ function renderSchedule() {
   });
 }
 
+function renderSensitivity() {
+  const section = $('sensitivitySection');
+  if (!lastResult || lastResult.mode !== 'reverse') {
+    section.hidden = true;
+    return;
+  }
+  const { inputs } = lastResult;
+  const rows = computeReverseSensitivity(inputs, 0.10, 0.10, 0.01);
+  const tbody = document.querySelector('#sensitivityTable tbody');
+  tbody.innerHTML = '';
+  const totalPaid = inputs.totalPaid;
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    const ratePct = (r.rate * 100).toFixed(0) + '%';
+    if (r.cashValue == null) {
+      tr.innerHTML = `<td>${ratePct}</td><td class="num">—</td><td class="num">${r.error || ''}</td>`;
+    } else {
+      const delta = r.cashValue - totalPaid;
+      const sign = delta > 0 ? '+' : '';
+      tr.innerHTML = `<td>${ratePct}</td><td class="num">${fmt.format(r.cashValue)}</td><td class="num">${sign + fmt.format(delta)}</td>`;
+    }
+    if (r.isCenter) tr.classList.add('bulk-row-table');
+    tbody.appendChild(tr);
+  });
+  section.hidden = false;
+}
+
 function renderSummary() {
   if (!lastResult) return;
-  const { plan, plainPlan } = lastResult;
+  const { plan, plainPlan, mode } = lastResult;
   $('rDown').textContent = fmt.format(plan.fvDown);
   $('rInstallment').textContent = fmt.format(plan.fvInstallment);
   $('rNumInstall').textContent = plan.numInstallments;
   $('rFactor').textContent = plan.factor.toFixed(4);
   $('rTotal').textContent = fmt.format(Math.round(plainPlan.total));
   $('rTotalCieled').textContent = fmt.format(plan.total);
+  const cashItem = $('rCashValueItem');
+  if (mode === 'reverse' && plan.cashValue != null) {
+    cashItem.hidden = false;
+    $('rCashValue').textContent = fmt.format(plan.cashValue);
+  } else {
+    cashItem.hidden = true;
+  }
+}
+
+function getMode() {
+  const checked = document.querySelector('input[name="mode"]:checked');
+  return checked ? checked.value : 'forward';
 }
 
 function calculate() {
   clearError();
   try {
+    const mode = getMode();
     const paymentInterval = parseInt($('paymentInterval').value, 10);
+    const amount = parseFloat($('cashValue').value);
     const inputs = {
-      cashValue: parseFloat($('cashValue').value),
       interestRate: parseFloat($('interestRate').value) / 100,
       downPaymentPct: parseFloat($('downPayment').value) / 100,
       paymentInterval,
       years: parseInt($('years').value, 10) || 0,
       bulks: readBulks(),
     };
-    const startDate = parseStartDate($('startDate').value);
 
-    if (!(inputs.cashValue > 0)) throw new Error('Cash value must be > 0.');
+    if (!(amount > 0)) throw new Error(mode === 'reverse' ? 'Total Paid must be > 0.' : 'Cash value must be > 0.');
     if (inputs.downPaymentPct < 0 || inputs.downPaymentPct >= 1) throw new Error('Down payment must be between 0 and <100%.');
 
-    const plainPlan = computePlan(inputs);
-    const cielDigits = parseInt($('cielDigits').value, 10);
-    const plan = applyCeiling(plainPlan, cielDigits);
+    let plainPlan, plan, startDate;
+    if (mode === 'reverse') {
+      startDate = parseStartDate(todayISO());
+      $('startDate').value = todayISO();
+      inputs.totalPaid = amount;
+      inputs.startDate = startDate;
+      plainPlan = computeReversePlan(inputs);
+      plan = plainPlan; // no ceiling in reverse mode
+    } else {
+      startDate = parseStartDate($('startDate').value);
+      inputs.cashValue = amount;
+      plainPlan = computePlan(inputs);
+      const cielDigits = parseInt($('cielDigits').value, 10);
+      plan = applyCeiling(plainPlan, cielDigits);
+    }
 
-    lastResult = { plan, plainPlan, startDate, inputs };
+    lastResult = { plan, plainPlan, startDate, inputs, mode };
     renderSummary();
     renderSchedule();
+    renderSensitivity();
     $('resultsCard').hidden = false;
     $('resultsCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) {
     showError(e.message);
   }
+}
+
+function applyModeToUi() {
+  const mode = getMode();
+  const isReverse = mode === 'reverse';
+  $('cashValueLabel').setAttribute('data-i18n', isReverse ? 'totalPaidInput' : 'cashValue');
+  $('cashValueLabel').textContent = t(isReverse ? 'totalPaidInput' : 'cashValue');
+  $('cashValueHelp').setAttribute('data-i18n-tip', isReverse ? 'totalPaidInputTip' : 'cashValueTip');
+  $('startDate').disabled = isReverse;
+  $('cielDigits').disabled = isReverse;
+  if (isReverse) $('startDate').value = todayISO();
 }
 
 function resetAll() {
@@ -227,6 +376,9 @@ function resetAll() {
   $('resultsCard').hidden = true;
   lastResult = null;
   clearError();
+  const fwd = document.querySelector('input[name="mode"][value="forward"]');
+  if (fwd) fwd.checked = true;
+  applyModeToUi();
 }
 
 function todayISO() {
@@ -303,10 +455,13 @@ function onLanguageChange() {
     const btn = row.querySelector('[data-i18n-title]');
     if (btn) btn.title = t(btn.getAttribute('data-i18n-title'));
   });
+  // Refresh mode-dependent label
+  applyModeToUi();
   // Re-render results in new language
   if (lastResult) {
     renderSummary();
     renderSchedule();
+    renderSensitivity();
   }
 }
 
@@ -372,6 +527,10 @@ document.addEventListener('DOMContentLoaded', () => {
   applyTranslations();
   wireTooltips();
   document.addEventListener('scroll', hideTooltip, true);
+  document.querySelectorAll('input[name="mode"]').forEach(r => {
+    r.addEventListener('change', applyModeToUi);
+  });
+  applyModeToUi();
   $('addBulk').addEventListener('click', () => addBulkRow());
   $('calculate').addEventListener('click', calculate);
   $('reset').addEventListener('click', resetAll);

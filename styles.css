@@ -168,6 +168,28 @@ input:focus, select:focus {
   font-size: .75rem;
 }
 
+.mode-switch {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding: .5rem .75rem;
+  background: var(--bg-elev, rgba(255,255,255,0.04));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+.mode-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  cursor: pointer;
+  font-size: .9rem;
+}
+input:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
 .bulk-section {
   margin-top: 1.5rem;
   padding-top: 1.5rem;
